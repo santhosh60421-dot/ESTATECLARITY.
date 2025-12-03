@@ -1,0 +1,181 @@
+import React, { useState, useEffect } from 'react';
+import { AgentRole, Message, AppState } from './types';
+import { AGENTS } from './constants';
+import AgentSelector from './components/AgentSelector';
+import ChatInterface from './components/ChatInterface';
+import { sendMessageToGemini } from './services/geminiService';
+import { Menu, X, Key } from 'lucide-react';
+
+const App: React.FC = () => {
+  const [state, setState] = useState<AppState>({
+    activeAgent: AgentRole.STRATEGIST,
+    messages: [],
+    isLoading: false,
+    apiKey: null,
+    sidebarOpen: true,
+  });
+
+  // Check for API key in env or local storage mock
+  useEffect(() => {
+    // In this demo, we check process.env as per instructions.
+    if (process.env.API_KEY) {
+      setState(s => ({ ...s, apiKey: process.env.API_KEY || null }));
+    }
+  }, []);
+
+  const handleAgentSelect = (role: AgentRole) => {
+    setState(prev => ({ ...prev, activeAgent: role }));
+    // Mobile close sidebar
+    if (window.innerWidth < 768) {
+      setState(prev => ({ ...prev, sidebarOpen: false }));
+    }
+  };
+
+  const handleSendMessage = async (text: string) => {
+    if (!state.apiKey) {
+      alert("API Key is missing from environment.");
+      return;
+    }
+
+    const newMessage: Message = {
+      id: Date.now().toString(),
+      role: 'user',
+      content: text,
+      timestamp: new Date(),
+    };
+
+    setState(prev => ({
+      ...prev,
+      messages: [...prev.messages, newMessage],
+      isLoading: true
+    }));
+
+    // Detect if we need to switch agent based on basic keywords (Simple Orchestrator logic)
+    // In a full production app, the Strategist Agent would parse this via an LLM call first.
+    let targetAgent = state.activeAgent;
+    const lowerText = text.toLowerCase();
+    
+    // Quick keyword matching for improved UX in this demo
+    if (state.activeAgent === AgentRole.STRATEGIST) {
+        if (lowerText.includes('loan') || lowerText.includes('emi') || lowerText.includes('mortgage')) targetAgent = AgentRole.FINANCE;
+        else if (lowerText.includes('invest') || lowerText.includes('roi')) targetAgent = AgentRole.INVESTMENT;
+        else if (lowerText.includes('search') || lowerText.includes('find house')) targetAgent = AgentRole.SEARCH;
+        else if (lowerText.includes('contract') || lowerText.includes('legal')) targetAgent = AgentRole.LEGAL;
+    }
+
+    // Call Gemini
+    const response = await sendMessageToGemini(
+      state.apiKey,
+      text,
+      state.messages.map(m => ({ role: m.role, content: m.content })),
+      targetAgent
+    );
+
+    const botMessage: Message = {
+      id: (Date.now() + 1).toString(),
+      role: 'model',
+      content: response.text,
+      timestamp: new Date(),
+      agentUsed: response.agentUsed,
+      toolData: response.toolData
+    };
+
+    setState(prev => ({
+      ...prev,
+      messages: [...prev.messages, botMessage],
+      isLoading: false,
+      activeAgent: targetAgent // Update active agent if orchestrator switched it
+    }));
+  };
+
+  if (!state.apiKey) {
+    return (
+      <div className="h-screen w-screen bg-slate-950 flex flex-col items-center justify-center text-slate-300 p-4">
+        <Key size={48} className="text-red-500 mb-4" />
+        <h1 className="text-2xl font-bold mb-2">API Key Missing</h1>
+        <p className="text-center max-w-md">
+            Please ensure <code>process.env.API_KEY</code> is configured in the environment variables to power ESTATECLARITY.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-screen bg-slate-950 overflow-hidden text-slate-100 font-sans">
+      {/* Sidebar */}
+      <div className={`fixed inset-y-0 left-0 z-30 w-72 bg-slate-900 border-r border-slate-800 transform transition-transform duration-300 ease-in-out ${state.sidebarOpen ? 'translate-x-0' : '-translate-x-full'} md:relative md:translate-x-0`}>
+        <div className="flex flex-col h-full">
+          <div className="p-5 border-b border-slate-800 flex items-center justify-between bg-slate-900">
+            <div className="flex items-center gap-2">
+                <div className="w-8 h-8 bg-brand-600 rounded-lg flex items-center justify-center">
+                    <span className="font-bold text-white text-lg">E</span>
+                </div>
+                <h1 className="font-bold text-lg tracking-tight">ESTATE<span className="text-brand-500">CLARITY</span></h1>
+            </div>
+            <button onClick={() => setState(s => ({...s, sidebarOpen: false}))} className="md:hidden text-slate-400">
+              <X size={24} />
+            </button>
+          </div>
+          
+          <div className="flex-1 overflow-y-auto">
+            <AgentSelector 
+              currentAgent={state.activeAgent}
+              onSelect={handleAgentSelect}
+            />
+          </div>
+          
+          <div className="p-4 border-t border-slate-800 text-xs text-slate-500">
+             System Status: <span className="text-green-500 font-medium">Online</span>
+             <br />
+             Model: Gemini 3.0 Pro
+          </div>
+        </div>
+      </div>
+
+      {/* Main Content */}
+      <div className="flex-1 flex flex-col min-w-0">
+        <header className="h-16 bg-slate-900/50 backdrop-blur border-b border-slate-800 flex items-center justify-between px-4 sticky top-0 z-20">
+          <button 
+            onClick={() => setState(s => ({...s, sidebarOpen: true}))}
+            className="md:hidden p-2 text-slate-400 hover:text-white"
+          >
+            <Menu size={24} />
+          </button>
+          
+          <div className="flex items-center gap-3">
+             <div className="text-sm text-slate-400 hidden sm:block">
+               Current Mode:
+             </div>
+             <div className="px-3 py-1 bg-brand-900/30 border border-brand-500/30 rounded-full text-brand-400 text-sm font-medium flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full ${AGENTS[state.activeAgent].color.replace('text', 'bg').replace('-400', '-500')}`}></span>
+                {AGENTS[state.activeAgent].role}
+             </div>
+          </div>
+
+          <div className="flex items-center gap-4">
+             {/* Additional Header Controls can go here */}
+          </div>
+        </header>
+
+        <main className="flex-1 overflow-hidden relative">
+           <ChatInterface 
+             messages={state.messages}
+             isLoading={state.isLoading}
+             onSendMessage={handleSendMessage}
+             activeAgent={state.activeAgent}
+           />
+        </main>
+      </div>
+      
+      {/* Overlay for mobile sidebar */}
+      {state.sidebarOpen && (
+        <div 
+          className="fixed inset-0 bg-black/50 z-20 md:hidden"
+          onClick={() => setState(s => ({...s, sidebarOpen: false}))}
+        />
+      )}
+    </div>
+  );
+};
+
+export default App;
